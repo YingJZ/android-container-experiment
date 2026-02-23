@@ -1,0 +1,25 @@
+# Android / Gradle
+test-app/BinderTestApp/build/
+test-app/BinderTestApp/.gradle/
+test-app/BinderTestApp/local.properties
+test-app/BinderTestApp/.externalNativeBuild
+test-app/BinderTestApp/.idea/
+test-app/BinderTestApp/*.iml
+test-app/BinderTestApp/captures/
+test-app/BinderTestApp/.DS_Store
+test-app/BinderTestApp/app/build/
+test-app/BinderTestApp/app/.externalNativeBuild
+
+# ReDroid / Docker
+*.img
+*.checkpoint
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.swp
+*.swo
+*~
+.DS_Store
