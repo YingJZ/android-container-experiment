@@ -23,3 +23,5 @@ logs/
 *.swo
 *~
 .DS_Store
+# Linux kernel source (local development only)
+linux-source-5.4.0/

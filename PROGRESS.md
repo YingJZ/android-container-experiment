@@ -25,4 +25,4 @@
 
 首先要解决的问题：让 CRIU 能成功 checkpoint 一个 Android 容器（目前因为 binder 无关的原因失败，需要进行修复）
 
-计划采用 LXC + CRIU 的方案 (不使用 ReDroid)，以简化容器环境. 参考：[PLAN-ISSUES-SOLUTIONS.md](PLAN-ISSUES-SOLUTIONS.md)。
+计划采用 LXC + CRIU 的方案 (不使用 ReDroid)，以简化容器环境. 参考：[PLAN-ISSUES-SOLUTION.md](PLAN-ISSUES-SOLUTION.md)。
