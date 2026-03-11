@@ -1,0 +1,188 @@
+<mxGraphModel>
+  <root>
+    <mxCell id="0"/>
+    <mxCell id="1" parent="0"/>
+    
+    <!-- 标题 -->
+    <mxCell id="title" value="CRIU Binder 快照/恢复方案 - 组件改动结构图" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=18;fontStyle=1" vertex="1" parent="1">
+      <mxGeometry x="200" y="20" width="400" height="30" as="geometry"/>
+    </mxCell>
+    
+    <!-- 用户态区域 -->
+    <mxCell id="userspace-box" value="用户态 (CRIU)" style="swimlane;horizontal=0;startSize=30;fillColor=#dae8fc;strokeColor=#6c8ebf;rounded=1" vertex="1" parent="1">
+      <mxGeometry x="40" y="70" width="360" height="480" as="geometry"/>
+    </mxCell>
+    
+    <!-- 用户态 - 新增文件 -->
+    <mxCell id="userspace-new" value="新增文件" style="swimlane;horizontal=0;startSize=25;fillColor=#d5e8d4;strokeColor=#82b366;rounded=1" vertex="1" parent="userspace-box">
+      <mxGeometry x="10" y="40" width="340" height="200" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="binder-proto" value="images/binder.proto&#xa;protobuf 镜像格式定义" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=middle" vertex="1" parent="userspace-new">
+      <mxGeometry x="15" y="35" width="150" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="binder-h" value="criu/include/binder.h&#xa;头文件" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=middle" vertex="1" parent="userspace-new">
+      <mxGeometry x="175" y="35" width="150" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="binder-c" value="criu/binder.c&#xa;核心 dump/restore 逻辑" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=middle;fontStyle=1" vertex="1" parent="userspace-new">
+      <mxGeometry x="15" y="95" width="310" height="45" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="binder-test" value="test/zdtm/static/binder_test.c&#xa;测试用例" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=middle" vertex="1" parent="userspace-new">
+      <mxGeometry x="15" y="150" width="310" height="40" as="geometry"/>
+    </mxCell>
+    
+    <!-- 用户态 - 修改文件 -->
+    <mxCell id="userspace-modify" value="修改文件" style="swimlane;horizontal=0;startSize=25;fillColor=#ffe6cc;strokeColor=#d79b00;rounded=1" vertex="1" parent="userspace-box">
+      <mxGeometry x="10" y="250" width="340" height="210" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="cr-dump-c" value="criu/cr-dump.c&#xa;集成 binder dump" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;verticalAlign=middle" vertex="1" parent="userspace-modify">
+      <mxGeometry x="15" y="35" width="150" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="cr-restore-c" value="criu/cr-restore.c&#xa;集成 binder restore" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;verticalAlign=middle" vertex="1" parent="userspace-modify">
+      <mxGeometry x="175" y="35" width="150" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="files-c" value="criu/files.c&#xa;注册 binder fd 类型" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;verticalAlign=middle" vertex="1" parent="userspace-modify">
+      <mxGeometry x="15" y="95" width="150" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="makefile" value="criu/Makefile.crtools&#xa;添加编译目标" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;verticalAlign=middle" vertex="1" parent="userspace-modify">
+      <mxGeometry x="175" y="95" width="150" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="imgset" value="criu/imgset.c&#xa;镜像集管理" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;verticalAlign=middle" vertex="1" parent="userspace-modify">
+      <mxGeometry x="15" y="155" width="150" height="45" as="geometry"/>
+    </mxCell>
+    
+    <!-- 内核态区域 -->
+    <mxCell id="kernel-box" value="内核态 (Binder 驱动)" style="swimlane;horizontal=0;startSize=30;fillColor=#e1d5e7;strokeColor=#9673a6;rounded=1" vertex="1" parent="1">
+      <mxGeometry x="440" y="70" width="360" height="480" as="geometry"/>
+    </mxCell>
+    
+    <!-- 内核态 - 新增内容 -->
+    <mxCell id="kernel-new" value="新增内容" style="swimlane;horizontal=0;startSize=25;fillColor=#d5e8d4;strokeColor=#82b366;rounded=1" vertex="1" parent="kernel-box">
+      <mxGeometry x="10" y="40" width="340" height="200" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="ioctl-def" value="include/uapi/linux/android/binder.h&#xa;新增 ioctl 定义和数据结构" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=middle;fontStyle=1" vertex="1" parent="kernel-new">
+      <mxGeometry x="15" y="35" width="310" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="ioctl-dump" value="BINDER_DUMP_STATE&#xa;导出 binder_proc 状态" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=middle" vertex="1" parent="kernel-new">
+      <mxGeometry x="15" y="95" width="150" height="45" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="ioctl-restore" value="BINDER_RESTORE_STATE&#xa;恢复 binder_proc 状态" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=middle" vertex="1" parent="kernel-new">
+      <mxGeometry x="175" y="95" width="150" height="45" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="ref-with-desc" value="binder_get_ref_for_node_with_desc()&#xa;强制指定 handle 分配" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=center;verticalAlign=middle" vertex="1" parent="kernel-new">
+      <mxGeometry x="15" y="150" width="310" height="40" as="geometry"/>
+    </mxCell>
+    
+    <!-- 内核态 - 修改文件 -->
+    <mxCell id="kernel-modify" value="修改文件" style="swimlane;horizontal=0;startSize=25;fillColor=#ffe6cc;strokeColor=#d79b00;rounded=1" vertex="1" parent="kernel-box">
+      <mxGeometry x="10" y="250" width="340" height="210" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="binder-c_dup1" value="drivers/android/binder.c&#xa;主要修改：实现 dump/restore ioctl" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;verticalAlign=middle;fontStyle=1" vertex="1" parent="kernel-modify">
+      <mxGeometry x="15" y="35" width="310" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="binder-internal" value="drivers/android/binder_internal.h&#xa;导出内部结构" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;verticalAlign=middle" vertex="1" parent="kernel-modify">
+      <mxGeometry x="15" y="95" width="150" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="binder-alloc" value="drivers/android/binder_alloc.c&#xa;mmap 恢复支持" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;verticalAlign=middle" vertex="1" parent="kernel-modify">
+      <mxGeometry x="175" y="95" width="150" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="service-lookup" value="服务查找辅助函数&#xa;lookup_service_node()" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=center;verticalAlign=middle" vertex="1" parent="kernel-modify">
+      <mxGeometry x="15" y="155" width="150" height="45" as="geometry"/>
+    </mxCell>
+    
+    <!-- 镜像文件 -->
+    <mxCell id="image-box" value="镜像文件" style="swimlane;horizontal=0;startSize=30;fillColor=#f5f5f5;strokeColor=#666666;rounded=1" vertex="1" parent="1">
+      <mxGeometry x="840" y="70" width="160" height="200" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="binder-img" value="binder-{pid}.img&#xa;Binder 状态镜像" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#e6e6e6;strokeColor=#999999;align=center;verticalAlign=middle" vertex="1" parent="image-box">
+      <mxGeometry x="15" y="40" width="130" height="50" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="other-img" value="其他 CRIU 镜像&#xa;(内存、fd 等)" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#e6e6e6;strokeColor=#999999;align=center;verticalAlign=middle" vertex="1" parent="image-box">
+      <mxGeometry x="15" y="100" width="130" height="50" as="geometry"/>
+    </mxCell>
+    
+    <!-- 连接箭头 -->
+    <!-- CRIU dump 到镜像 -->
+    <mxCell id="arrow1" value="" style=" endArrow=classic;html=1;strokeWidth=2;strokeColor=#6c8ebf" edge="1" parent="1" source="binder-c" target="binder-img">
+      <mxGeometry width="50" height="50" relative="1" as="geometry">
+        <mxPoint x="440" y="380" as="sourcePoint"/>
+        <mxPoint x="840" y="330" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    
+    <!-- 镜像到 CRIU restore -->
+    <mxCell id="arrow2" value="" style=" endArrow=classic;html=1;strokeWidth=2;strokeColor=#6c8ebf;dashed=1" edge="1" parent="1" source="binder-img" target="cr-restore-c">
+      <mxGeometry width="50" height="50" relative="1" as="geometry">
+        <mxPoint x="840" y="350" as="sourcePoint"/>
+        <mxPoint x="440" y="400" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    
+    <!-- CRIU binder.c 到 binder.c 的 ioctl 调用 -->
+    <mxCell id="arrow3" value="ioctl" style=" endArrow=classic;startArrow=classic;html=1;strokeWidth=2;strokeColor=#d79b00;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0" edge="1" parent="1" source="binder-c" target="ioctl-def">
+      <mxGeometry width="50" height="50" relative="1" as="geometry">
+        <mxPoint x="360" y="230" as="sourcePoint"/>
+        <mxPoint x="460" y="180" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    
+    <!-- 图例 -->
+    <mxCell id="legend-box" value="图例" style="swimlane;horizontal=0;startSize=25;fillColor=#f5f5f5;strokeColor=#666666;rounded=1" vertex="1" parent="1">
+      <mxGeometry x="840" y="310" width="160" height="160" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="legend-new" value="新增文件" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656" vertex="1" parent="legend-box">
+      <mxGeometry x="15" y="35" width="60" height="30" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="legend-modify" value="修改文件" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450" vertex="1" parent="legend-box">
+      <mxGeometry x="85" y="35" width="60" height="30" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="legend-key" value="核心文件" style=" rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontStyle=1" vertex="1" parent="legend-box">
+      <mxGeometry x="15" y="75" width="130" height="30" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="legend-arrow1" value="数据流" style=" endArrow=classic;html=1;strokeWidth=2;strokeColor=#6c8ebf" edge="1" parent="legend-box">
+      <mxGeometry width="50" height="50" relative="1" as="geometry">
+        <mxPoint x="15" y="125" as="sourcePoint"/>
+        <mxPoint x="75" y="125" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    
+    <mxCell id="legend-arrow2" value="ioctl 调用" style=" endArrow=classic;startArrow=classic;html=1;strokeWidth=2;strokeColor=#d79b00" edge="1" parent="legend-box">
+      <mxGeometry width="50" height="50" relative="1" as="geometry">
+        <mxPoint x="15" y="145" as="sourcePoint"/>
+        <mxPoint x="75" y="145" as="targetPoint"/>
+      </mxGeometry>
+    </mxCell>
+    
+    <!-- 流程标注 -->
+    <mxCell id="flow-dump" value="Dump 流程" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontColor=#6c8ebf" vertex="1" parent="1">
+      <mxGeometry x="640" y="260" width="80" height="20" as="geometry"/>
+    </mxCell>
+    
+    <mxCell id="flow-restore" value="Restore 流程" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontStyle=1;fontColor=#d79b00" vertex="1" parent="1">
+      <mxGeometry x="640" y="340" width="80" height="20" as="geometry"/>
+    </mxCell>
+    
+  </root>
+</mxGraphModel>

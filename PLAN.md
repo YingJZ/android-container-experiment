@@ -1084,3 +1084,129 @@ criu/
 - Redroid 项目：https://github.com/remote-android/redroid-doc
 - Flux 论文中 CRIA 的设计思路[16][17][18]
 - CRIU 的 plugin 机制文档（可考虑以 plugin 形式实现而非修改核心代码）
+
+---
+
+## 四、应用快照需要恢复的完整状态清单
+
+核心结论：CRIU 能恢复大部分进程内 + 内核本地状态（线程、堆内存、多数 FD），但凡是与外部进程联合持有的状态（Android 系统服务、HAL 守护进程、SurfaceFlinger、网络对端）在仅恢复 app 进程时都会失效或不一致。
+
+### 4.1 当前项目覆盖范围
+
+PLAN.md 专注于 Binder 内核态（binder_proc/binder_node/binder_ref/binder_thread），这是最关键的一层。但它在 Section 2.4 Challenge 4 中也承认：即使 Binder 连接恢复了，系统服务的应用端状态仍可能不一致，并提出了 Flux/Selective Record/Adaptive Replay 作为解决方向。
+
+### 4.2 完整状态清单（7 大类）
+
+图例：P0 = 应用崩溃，P1 = 功能失效，P2 = 细微问题；CRIU = Full/Partial/No
+
+#### 1. 内核级状态（非 Binder）
+
+| 状态 | 失效表现 | 严重度 | CRIU | 需要的额外工作 |
+|---|---|:---:|:---:|---|
+| 常规文件 FD | 通常 OK；文件被修改时内容不一致 | P2 | Full | 确保挂载/路径稳定 |
+| ashmem FD | 共享内存区域丢失/归零，native 崩溃 | P0 | No | 需自定义 dump/restore ashmem 内容 |
+| memfd | ASharedMemory 共享失败 | P0/P1 | Partial | 验证 CRIU memfd 支持 |
+| Unix 域 socket（已连接） | 对端未 checkpoint → 连接断开（logd/netd/statsd） | P0/P1 | Partial | 恢复后重连 |
+| TCP/UDP socket | NAT 超时/对端 RST | P1 | Partial | 重连 + 幂等重试 |
+| eventfd / timerfd / epoll | 事件循环卡死或定时器立即触发 | P0/P1 | Full | 配合时间策略调整 |
+| inotify / signalfd | 丢失事件 / 信号语义漂移 | P1 | Partial | 恢复后重建 watcher |
+| 设备 FD（GPU/camera/audio/ion/drm） | 驱动拒绝、IO 错误、native 崩溃 | P0 | No | dump 前关闭，恢复后重新打开 |
+| dmabuf / GraphicBuffer | 渲染管线爆炸，黑屏或 SIGSEGV | P0 | No | 释放 buffer → 重建 Surface/EGL |
+| 匿名映射（堆/栈/JIT） | 通常 OK | — | Full | — |
+| 文件映射（DEX/OAT/.so） | 文件被修改时崩溃 | P0 | Full | 确保 base image 不变 |
+| 信号处理器/掩码 | 通常 OK | P0 | Full | — |
+| futex / 条件变量 | 恢复到稳定点即可 | P1 | Full | 在 quiesce 点冻结 |
+| PID 命名空间 | PID 变化 → AMS/WMS 的 ProcessRecord 预期被打破 | P0/P1 | Partial | 必须保持 PID 一致或与 AMS 协商 |
+| SELinux 上下文 | Binder/设备访问检查失败 | P0 | Partial | 恢复到相同上下文 |
+
+#### 2. Android 系统服务状态（app ↔ system_server 联合持有）
+
+这是最复杂的一层。系统服务通过 Binder token、PID/UID、window token、death recipient 来跟踪每个 app。仅恢复 app 进程不会回滚这些注册。
+
+| 服务 | 持有的 app 状态 | 失效后果 | 严重度 | 恢复方式 |
+|---|---|---|:---:|---|
+| AMS (ProcessRecord + IApplicationThread) | 进程生命周期、adj、bound service、FGS、broadcast receiver 注册 | AMS 认为进程已死；回调失效；ANR | P0 | 重新 attach 或 force-stop + 重启 Activity（但丢失内存状态） |
+| WMS (窗口 token + SurfaceControl + input channel) | Surface 层级、输入通道、焦点、可见性 | UI 黑屏/冻结；触摸/按键无响应 | P0/P1 | 重建窗口/Surface；触发 Activity recreate |
+| SurfaceFlinger | BufferQueue、图层状态、sync fence | 渲染管线崩溃 | P0 | 重建 Surface + EGL 上下文 |
+| InputMethodManager | 输入连接、IME session、光标状态 | 键盘不弹出或输入无响应 | P1 | 重建 ViewRoot / 重启输入 |
+| AlarmManager | 已调度闹钟（RTC/ELAPSED）、PendingIntent | 闹钟在冻结期间触发；app 认为未触发 | P1 | 恢复后对账 + 重新调度 |
+| JobScheduler | 任务队列、约束、退避、执行历史 | 任务重复执行或丢失 | P1 | 重新绑定回调；幂等键 |
+| ContentProvider 连接 | stable/unstable ref、cursor window、URI 权限 | cursor 无效；observer 死亡 | P1 | quiesce 时关闭 cursor/txn；恢复后重新查询 |
+| NotificationManager | 已发通知、channel、listener 绑定 | 回调断开；PendingIntent 指向旧进程 | P1/P2 | 重新注册 listener；按需重发 |
+| ConnectivityManager / NetworkCallback | 网络请求、回调、socket tagging | 回调停止；socket 可能在已死网络上 | P1 | 重新注册回调；视为网络变化事件 |
+| LocationManager | 活跃请求、listener/PendingIntent | 不再收到更新 | P1 | 重新请求定位更新 |
+| SensorManager | 已启用传感器、采样率、直接通道 | 无事件；直接通道 buffer 无效 | P1 | 反注册 + 重注册 |
+| MediaSession / AudioFocus | 播放状态、回调、音频焦点 | 焦点状态不匹配；回调断开 | P1 | 重建 session + 重新获取焦点 |
+
+#### 3. 框架 / 运行时状态
+
+| 状态 | 失效表现 | 严重度 | CRIU | 额外工作 |
+|---|---|:---:|:---:|---|
+| Handler/Looper 消息队列 | delayed 消息在恢复后立即/延迟触发 | P1/P2 | Full（内存） | 可选：rebase 延迟消息时间基准 |
+| 线程池 / Executor | 任务恢复执行但可能引用已失效的外部句柄 | P1 | Full | 在恢复后用 "ready latch" 把关 |
+| Choreographer | vsync 源通过 SurfaceFlinger → 断开 | P1 | No（依赖 SF） | 重建渲染管线 |
+| View 系统 / HWUI 渲染线程 | EGL/Surface 无效 → native crash | P0/P1 | No | 销毁 + 重建 Surface/EGL/GL 资源 |
+| SharedPreferences | apply() 异步写；冻结时可能 mid-flight | P2 | Full | quiesce 时 commit() |
+| SQLite 连接 + WAL | 冻结时若在事务中 → 锁 owner 不匹配、数据损坏 | P0/P1 | Partial | quiesce 时结束事务 + checkpoint WAL + 关闭 DB |
+| ContentObserver 注册 | 不再收到变化通知 | P1 | No | 重注册 observer |
+
+#### 4. 非 Binder IPC
+
+| 机制 | 失效表现 | 严重度 | CRIU | 额外工作 |
+|---|---|:---:|:---:|---|
+| Unix socket → logd | 日志阻塞 | P1 | Partial | 恢复后重连 logger socket |
+| Unix socket → netd/resolv | DNS/网络操作失败 | P1 | Partial | 强制网络栈重初始化 |
+| ashmem/memfd 共享内存 | 生产者/消费者不一致 | P0/P1 | Partial/No | 重建共享区域 + 重发句柄 |
+| Pipe（ParcelFileDescriptor） | 对端不在 checkpoint 中 → broken pipe | P1 | Partial | 关闭 PFD；恢复后重新协商 |
+
+#### 5. 硬件 / 设备状态（几乎全部需要重新初始化）
+
+| 子系统 | 失效表现 | 严重度 | CRIU | 额外工作 |
+|---|---|:---:|:---:|---|
+| Camera2 session | session 无效，buffer 被拒 | P0/P1 | No | dump 前关闭相机；恢复后重建 session |
+| AudioTrack / AudioRecord | 死轨，underrun，焦点不匹配 | P1/P0 | No | 重建 track/record + 重同步时间戳 |
+| GPU/EGL/Vulkan 上下文 | context lost，驱动拒绝 | P0 | No | 全部重建上下文 + 重载纹理/shader |
+| Sensor HAL 直接通道 | 无效 channel ID/buffer | P1 | No | 重建通道 + 重启传感器 |
+
+#### 6. 网络状态
+
+| 状态 | 失效表现 | 严重度 | CRIU | 额外工作 |
+|---|---|:---:|:---:|---|
+| TCP 已建立连接 | 对端超时/RST；NAT 表项过期 | P1 | Partial | 重连 + 幂等重试 |
+| DNS 缓存 | 过期 | P2 | Yes | 重解析 |
+| HTTP/2 连接池 | stream reset，TLS session 无效 | P1 | No | 重建 client/pool |
+| WebSocket | 服务端断开 | P1 | Partial | 重连 + 重订阅 |
+
+#### 7. 时间敏感状态
+
+| 状态 | 失效表现 | 严重度 | CRIU | 额外工作 |
+|---|---|:---:|:---:|---|
+| 墙钟跳变 (currentTimeMillis) | 认证/session 过期、缓存 TTL 错误 | P1/P2 | N/A | 重新验证时间相关假设 |
+| 单调时钟漂移 (uptimeMillis) | delayed 任务立刻 "追赶" 执行 | P1 | N/A | 限速或 rebase 超时 |
+| Handler.postDelayed | 恢复后突发执行 | P1/P2 | Full（队列） | 重算 deadline |
+| 动画（ValueAnimator） | 跳帧/闪烁 | P2 | N/A | 取消 + 重启动画 |
+
+### 4.3 推荐的恢复架构
+
+根据分析，建议采用 quiesce → dump → restore → rebind 四阶段设计：
+
+1. **Quiesce（冻结前静默）**：停止动画、flush SharedPreferences/DB、关闭 camera/audio/sensor、drain 外部 socket、结束 Binder 事务
+2. **Dump（CRIU checkpoint）**：冻结进程，dump 全部内核态 + 进程内存 + Binder 状态
+3. **Restore（CRIU restore）**：恢复进程、内存映射、Binder 内核态
+4. **Rebind（恢复后重绑）**：检测断开的 Binder/socket/native 句柄；重连 logd/netd；重注册回调（network/sensor/location/media）；重建 Surface/EGL；调整时间基准
+
+对于前台 UI app 的无缝恢复，需要要么 (a) checkpoint 整个 Android userspace（system_server + SurfaceFlinger + HAL + app），要么 (b) 接受恢复后 Activity 重建（保留堆内存但重走 onCreate）。
+
+### 4.4 与当前 PLAN.md 的 Gap 分析
+
+| 维度 | PLAN.md 覆盖 | 缺口 |
+|---|---|---|
+| Binder 内核态 | ✅ 详尽设计 | — |
+| ashmem/memfd | ❌ | 需要自定义 dump/restore |
+| 系统服务状态 | ⚠️ 提到了 Challenge 4 / Flux 方向 | 缺少具体设计和实现方案 |
+| 设备 FD (GPU/camera/audio) | ❌ | 需要 quiesce hook |
+| 网络连接 | ❌ | 需要重连策略 |
+| 时间处理 | ❌ | 需要 rebase 策略 |
+| SQLite/WAL | ❌ | 需要 quiesce 时 checkpoint WAL |
+
+这些 gap 中，系统服务状态（特别是 AMS ProcessRecord 和 WMS 窗口状态）是最大的技术挑战，也是决定 "app 级快照" vs "系统级快照" 路线的关键决策点。
