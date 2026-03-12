@@ -20,6 +20,7 @@
 6. [NotificationManager / MediaSession / InputMethodManager 状态恢复](#6-notificationmanager--mediasession--inputmethodmanager-状态恢复)
 7. [PackageManager / 权限 / AppOps 状态校验](#7-packagemanager--权限--appops-状态校验)
 8. [验证与测试矩阵](#8-验证与测试矩阵)
+9. [与 Flux 论文方案的对比分析](#9-与-flux-论文方案的对比分析)
 
 ---
 
@@ -303,6 +304,9 @@ public void notifyCriuRestored(String pkg, int userId, long checkpointId,
 | **窗口级重连 + 资源重建** (推荐) | 用 `restoreId` 找回 WindowState，替换 binder client，重建 SurfaceControl/BufferQueue/InputChannel | App 不重启，保留进程状态 | 需改 AOSP framework + WMS | Large |
 | A. 直接重启 Activity | 检测恢复后 kill+relaunch | UI/输入自然重建 | 丢失进程内瞬时状态 | Small |
 | B. 内核/驱动级 CRIU | Binder/GPU/Input 原生可 checkpoint | 语义完整 | 工作量巨大，不稳定 | Very Large |
+| C. `[Flux借鉴]` 销毁渲染资源 + 自然重建 | 仅销毁硬件渲染资源（destroyHardwareResources），保留窗口/Activity，由下一次 performTraversals 自然重建 Surface + EGL | 不重启 Activity，工程复杂度远低于方案推荐 | 丢失窗口位置/z-order 等精细状态；重建过程可能有短暂黑屏 | Medium |
+
+> **推荐策略**：以「窗口级重连 + 资源重建」为主方案，以「`[Flux借鉴]` 销毁-重建」为 fallback。当 reconnectWindow 失败（如 restoreId 找不到匹配 WindowState）时自动降级到销毁-重建路径。
 
 ### 3.3 推荐方案：窗口级重连 + 资源重建
 
@@ -475,7 +479,7 @@ void handleCriuRestore() {
 
 #### 4.2.2 Alarm reconciliation（闹钟重对账）
 
-**策略**：应用持久化闹钟期望态，恢复后执行幂等重放。
+**策略**：应用持久化闹钟期望态，恢复后执行幂等重放。`[Flux借鉴]` 增加 checkpoint-time 过滤——跳过在 checkpoint 时刻之前已到期的闹钟，避免无意义的重调度。
 
 ```java
 // AlarmManager.java：DeadObject 重连
@@ -494,9 +498,15 @@ private <T> T callWithRetry(Callable<T> c) throws RemoteException {
 }
 
 // 应用侧闹钟重放
-void onCriuRestored() {
+void onCriuRestored(long checkpointUptimeMs) {
+    long checkpointWallTimeMs = convertUptimeToWallTime(checkpointUptimeMs);
     List<AlarmSpec> specs = loadFromDisk();
     for (AlarmSpec s : specs) {
+        // [Flux借鉴] 跳过在 checkpoint 之前已到期的闹钟
+        if (s.triggerAtMillis <= checkpointWallTimeMs) {
+            Log.d(TAG, "Skipping expired alarm: " + s.requestCode);
+            continue;
+        }
         PendingIntent pi = PendingIntent.getBroadcast(
             ctx, s.requestCode, s.intent, FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE);
         alarmManager.setExactAndAllowWhileIdle(s.type, s.triggerAtMillis, pi);
@@ -576,7 +586,7 @@ void onCriuRestored() {
 
 ### 5.2 解决方案
 
-**核心原则**：框架侧记录注册参数以便重放；系统服务侧提供按 (uid,pid,restoreEpoch) 批量清理旧状态的入口。
+**核心原则**：框架侧记录注册参数以便重放；系统服务侧提供按 (uid,pid,restoreEpoch) 批量清理旧状态的入口。`[Flux借鉴]` 对于 ConnectivityManager，同设备场景下也可将 restore 视为一次普通网络变化事件，利用已有的 onAvailable/onLost 回调机制简化处理。
 
 #### 5.2.1 统一恢复点
 
@@ -628,6 +638,8 @@ void onProcessRestored(int uid, int pid, long epoch) {
 }
 ```
 
+> **`[Flux借鉴]` 简化路径**：在同设备场景下，网络配置（IP/路由/DNS）不变，可在 system_server 侧仅做 `removeRequestsFor(uid, pid)` 清理旧注册后，由 App 侧正常 re-register callback，ConnectivityService 会立即向新 callback 推送当前网络状态（onAvailable），无需额外的 replay 逻辑。这比完整的记录-清理-重放更简洁。
+
 #### 5.2.3 Location：重建 ListenerTransport
 
 ```java
@@ -648,6 +660,8 @@ void onProcessRestored(int uid, int pid, long epoch) {
 ```
 
 #### 5.2.4 Sensor：重建 native queue/connection
+
+> **`[Flux借鉴]` 备选方案：dup2 FD 保持技巧**：Flux 论文提出通过 `dup2()` 将新建的 SensorEventQueue socket FD 映射到旧 FD 号上，使上层代码无需感知 FD 变化。但在同设备场景下，CRIU 本身就保持 FD 号不变，且 SensorService 侧的 connection 仍需重建，因此完全重建（如下）更简单可靠。
 
 ```java
 // App side（SystemSensorManager 内部）
@@ -1008,27 +1022,201 @@ ReconcileResult reconcilePkgState(PkgSnapshot snapshot) {
 
 ---
 
+## 9. 与 Flux 论文方案的对比分析
+
+> Flux 是一篇研究 Android 应用跨设备迁移的论文，提出了 **Selective Record / Adaptive Replay + CRIA（Checkpoint/Restore in Android）** 方案。本节将 Flux 方案与本文档的 Quiesce/Rebind 框架进行系统对比，并据此改进本方案。
+
+### 9.1 架构层面对比
+
+| 维度 | 本方案（Quiesce/Rebind） | Flux（Selective Record/Adaptive Replay） |
+|------|------------------------|----------------------------------------|
+| **应用场景** | 同设备快照/恢复（ReDroid 容器） | 跨设备实时迁移 |
+| **checkpoint 范围** | 仅 App 进程（CRIU），system_server 不参与 | App 进程（CRIA），system_server 不 checkpoint 但被装饰 |
+| **核心机制** | Quiesce → Dump → Restore → Rebind 四阶段 + RestoreOrchestratorService 编排 | 预处理（push to background → release device state）→ CRIA checkpoint → restore → replay |
+| **system_server 改动方式** | 新增 AIDL 接口 + freeze/defer 协议 + RestoreModule 模块 | Decorator 注解标记方法（@record/@drop/@if/@replayproxy） |
+| **状态恢复哲学** | "尽量原位保留，精确重连" | "放弃设备相关状态，通过重放自然重建" |
+| **冻结期处理** | 显式 defer 队列（broadcast/service/provider） | 无需——已将 app 推至 stopped 状态，不会有新交互 |
+| **编排方式** | 集中式编排器 + 拓扑排序依赖图 | 分布式 decorator，由各服务自行处理 |
+| **代码侵入性** | 需修改 AOSP framework 多处（AMS/WMS/PMS 等） | 同样修改 AOSP，但以 decorator 形式，更局部化 |
+
+### 9.2 服务级别对比
+
+| 系统服务 | 本方案 | Flux | 对比分析 |
+|----------|--------|------|----------|
+| **AMS** | prepareCriuCheckpoint/notifyCriuRestored AIDL；冻结期 defer broadcast/service/provider；刷新 pid/thread 映射 | 不迁移 ProcessRecord；用 wrapper app 在目标设备通过 private PID namespace 重新 attachApplication | 本方案更完整：同设备可保留 ProcessRecord 并精确刷新；Flux 的 wrapper app 方式适合跨设备但丢失更多状态 |
+| **WMS/SurfaceFlinger** | restoreId 逻辑身份 + 窗口级重连 reconnectWindow()；重建 SurfaceControl/InputChannel；保留窗口位置和层级 | 完全销毁渲染状态（destroyHardwareResources + eglUnloadLibrary）；恢复后由 Activity resume 自然重建 | 本方案保留更多 UI 状态（窗口位置、z-order），但工程复杂度高；**Flux 的「销毁-重建」可作为 fallback 方案** |
+| **AlarmManager** | App 侧持久化闹钟期望态 + 幂等重放；DeadObject 重连 | @record set/setExact；checkpoint-time 对账（triggerAtTime ≤ checkpointTime → 跳过）；@replayproxy 重放 | 类似。**Flux 的 checkpoint-time 对账逻辑值得采纳**——避免重放已过期闹钟 |
+| **JobScheduler** | 完整支持：重注册 + jobId 覆盖式幂等 | **未支持**（未装饰） | 本方案优势。Flux 的缺失说明 Job 的跨设备迁移本身意义有限（设备条件变化），但同设备场景下有必要 |
+| **ContentProvider** | 完整支持：quiesce 时关闭 cursor；恢复后 provider map 清空 + DeadObject retry | **不支持**（明确排除） | 本方案优势。对容器场景而言 Provider 连接恢复是必须的 |
+| **ConnectivityManager** | 记录注册参数 + 系统侧 uid/pid 清理 + 重放 | 将迁移视为一次"网络变化事件"；自然触发 onAvailable/onLost 回调；~59 LOC | 两者都可行。**Flux 的「视为网络变化」思路更简洁**——同设备场景下 IP/网络配置不变，可简化处理 |
+| **LocationManager** | 记录 + 系统侧清理 + 重放 ListenerTransport | @record requestLocationUpdates；@drop removeUpdates；@replayproxy 重放；~45 LOC | 高度相似。Flux 的 decorator 方式更紧凑 |
+| **SensorManager** | 销毁旧 SensorEventQueue + 全量重注册 | **dup2 技巧**：保持 socket descriptor 编号不变，重连 native sensor connection | 方向不同。**Flux 的 dup2 技巧值得研究**——同设备场景下 FD 号可由 CRIU 保持，可能省去完全重建的开销 |
+| **NotificationManager** | NotifSnapshot 快照 + 重放 + 严格对账模式 + NLS 重绑 | @record notify；@drop cancel；恢复后重放活跃通知；~40 LOC | 本方案更完整（处理 NLS、bubbles、snooze、ranking）。Flux 的 @record/@drop 模式更简洁 |
+| **MediaSession/AudioFocus** | MediaSnapshot + 重推状态 + 幂等重申请焦点 | @record setActive/setMetadata/setPlaybackState；@record requestAudioFocus；~150 LOC | 高度相似 |
+| **InputMethodManager** | restartInput + 可见性对齐 + system_server 侧 ClientState 清理 | force hide → restore → reshow；~30 LOC | 高度相似。Flux 的 force-hide-first 策略可简化恢复 |
+| **PackageManager/权限/AppOps** | 完整校验：uid/签名/版本/权限/AppOps 摘要对比；硬门槛 UNRECOVERABLE | **未涉及** | 本方案优势。跨设备场景下包管理由安装流程保证；同设备快照场景需要显式校验 |
+
+### 9.3 Flux 方案的核心优势
+
+1. **Decorator 模式侵入性低**：通过 @record/@drop/@if/@replayproxy 标注系统服务方法，无需改变控制流，各服务独立改动，适合增量开发
+2. **"放弃设备状态" 哲学简化了 WMS/SurfaceFlinger 处理**：不尝试保留渲染管线状态，而是让 Activity 自然重建，大幅降低工程复杂度
+3. **Checkpoint-time 对账**：对 AlarmManager 的过期闹钟跳过逻辑简洁有效
+4. **SensorManager dup2 技巧**：通过保持 socket FD 号不变实现底层连接复用，避免完全重建
+5. **将网络恢复视为普通网络变化**：ConnectivityManager 不需要特殊处理，利用已有的网络状态变化回调机制
+
+### 9.4 Flux 方案的局限（相对于本方案）
+
+1. **不支持 JobScheduler 和 ContentProvider**：这两个服务在容器快照场景中不可或缺
+2. **不支持多进程应用**：Flux 限制为单进程 app
+3. **WMS 完全销毁策略**：丢失窗口位置、大小、z-order 等状态，用户体验不如精确重连
+4. **无冻结期 defer 机制**：Flux 假设 app 已被推至 stopped 状态，不处理冻结期间 system_server 主动推送的事件；在同设备场景中，短暂冻结期间仍可能有 broadcast/service 调度
+5. **缺少 PackageManager/权限校验**：同设备恢复可能面临冻结期间的包更新或权限撤销
+6. **跨设备复杂性**：需要处理设备异构性（屏幕尺寸、传感器差异等），这些在同设备场景中不存在
+
+### 9.5 据此对本方案的改进
+
+基于以上对比分析，本方案做如下改进（标记 `[Flux借鉴]`）：
+
+#### 9.5.1 AlarmManager：增加 checkpoint-time 对账逻辑
+
+在 §4.2.2 的闹钟重放逻辑中，增加过期闹钟跳过：
+
+```java
+// [Flux借鉴] Alarm reconciliation with checkpoint-time filtering
+void onCriuRestored(long checkpointUptimeMs) {
+    long checkpointWallTimeMs = convertUptimeToWallTime(checkpointUptimeMs);
+    List<AlarmSpec> specs = loadFromDisk();
+    for (AlarmSpec s : specs) {
+        // [Flux借鉴] 跳过在 checkpoint 之前已经到期的闹钟
+        if (s.triggerAtMillis <= checkpointWallTimeMs) {
+            Log.d(TAG, "Skipping expired alarm: " + s.requestCode);
+            continue;
+        }
+        PendingIntent pi = PendingIntent.getBroadcast(
+            ctx, s.requestCode, s.intent, FLAG_UPDATE_CURRENT | FLAG_IMMUTABLE);
+        alarmManager.setExactAndAllowWhileIdle(s.type, s.triggerAtMillis, pi);
+    }
+}
+```
+
+#### 9.5.2 SensorManager：评估 dup2 FD 保持技巧
+
+在 §5.2.4 中补充 Flux 的 dup2 方案作为优化选项：
+
+```java
+// [Flux借鉴] 方案 B：dup2 保持 socket FD 号不变
+// 原理：SensorEventQueue 底层使用 AF_UNIX socketpair（BitTube），
+//        CRIU 恢复后 FD 号不变但 socket 对端（SensorService）已断开。
+//        通过 dup2 将新建连接的 FD 映射到旧 FD 号上，上层代码无需感知。
+//
+// 适用性分析：
+//   - 同设备场景优势：CRIU 本身会保持 FD 号，减少一步 dup2
+//   - 但 SensorService 侧的 connection 仍需重建
+//   - 评估结论：同设备场景下，完全重建（方案 A）更简单可靠；
+//     dup2 技巧更适合需要保持 native 层 FD 引用不变的场景
+```
+
+#### 9.5.3 ConnectivityManager：增加「视为网络变化」的简化路径
+
+在 §5.2.2 中补充：
+
+```java
+// [Flux借鉴] 简化路径：将 restore 视为一次网络变化事件
+// 在同设备场景下，IP 和网络配置不变，可以利用 ConnectivityService
+// 已有的 onAvailable/onLost/onCapabilitiesChanged 回调机制。
+// 具体做法：在 system_server 侧触发一次网络状态刷新，让已注册的
+// NetworkCallback 自然收到回调，无需显式重放注册。
+//
+// 实现：
+void onProcessRestored_simplified(int uid, int pid, long epoch) {
+    // 只需清理旧注册（binder token 已失效）
+    removeRequestsFor(uid, pid);
+    // 触发一次网络状态通知，让新注册的 callback 立即收到当前状态
+    notifyNetworkStateForNewCallbacks(uid);
+}
+```
+
+#### 9.5.4 WMS/SurfaceFlinger：增加「销毁-重建」作为 fallback 方案
+
+在 §3.2 的方案选项表中已有类似选项（方案 A：直接重启 Activity），但 Flux 的方式更精细——不重启 Activity 而是只销毁渲染资源：
+
+```java
+// [Flux借鉴] Fallback 方案：销毁渲染状态 + 自然重建
+// 当 restoreId 重连方案失败时的降级策略：
+void fallbackDestroyAndRebuild(Activity activity) {
+    // 1) 销毁硬件渲染资源（同 Flux 的 destroyHardwareResources）
+    activity.getWindow().getDecorView().destroyHardwareResources();
+
+    // 2) 强制 invalidate 整个视图树
+    View root = activity.getWindow().getDecorView();
+    root.invalidate();
+
+    // 3) 触发 ThreadedRenderer 重建管线
+    // Activity 的下一次 performTraversals() 会自然重建 Surface + EGL
+}
+```
+
+#### 9.5.5 Decorator 模式的启发：RestoreModule 接口增强
+
+Flux 的 decorator 思想启发我们让 RestoreModule 更声明式：
+
+```java
+// [Flux借鉴] 增强 RestoreModule 接口，支持声明式状态分类
+interface RestoreModule {
+    String name();
+    List<String> dependsOn();
+    Result preDump(Session s);
+    Result postRestore(Session s);
+    boolean required();
+
+    // [Flux借鉴] 新增：声明该模块管理的状态类别
+    default StateCategory stateCategory() {
+        return StateCategory.REQUIRES_RECONNECT;
+    }
+
+    enum StateCategory {
+        DEVICE_BOUND,       // 设备绑定状态，需销毁后重建（GPU/Camera/Sensor）
+        REQUIRES_RECONNECT, // 需要主动重连（AMS/WMS/Notification）
+        IDEMPOTENT_REPLAY,  // 可幂等重放（Alarm/Job/Location）
+        VERIFY_ONLY         // 仅需校验（PMS/Permission）
+    }
+}
+```
+
+### 9.6 总结：两种方案互补性
+
+| 维度 | 本方案更优 | Flux 更优 | 互补点 |
+|------|-----------|-----------|--------|
+| 服务覆盖 | JobScheduler、ContentProvider、PMS/权限 | — | Flux 未覆盖的服务仍需本方案处理 |
+| AMS 处理 | 冻结期 defer 协议更完整 | — | — |
+| WMS 处理 | 窗口状态精确保留 | 销毁-重建更简单 | 两者互补：精确重连为主，销毁-重建为 fallback |
+| AlarmManager | — | checkpoint-time 对账 | 已采纳到本方案 |
+| SensorManager | — | dup2 FD 技巧 | 已评估，同设备场景下完全重建更适合 |
+| Connectivity | — | 视为网络变化事件 | 已采纳简化路径 |
+| 工程模式 | 集中编排，依赖可控 | decorator 分布式，侵入低 | StateCategory 声明式增强 |
+| 适用场景 | 同设备容器 | 跨设备迁移 | 核心机制可互相借鉴 |
+
 ## 附录：状态一致性总结表
 
-| 系统服务 | 严重度 | CRIU 覆盖 | 需要自定义处理 | 恢复方式 |
-|----------|--------|-----------|---------------|----------|
-| **AMS** | P0 | No | 是 | Quiesce + Reattach 协议 |
-| **WMS/SurfaceFlinger** | P0/P1 | No | 是 | 重建 Surface/EGL |
-| **AlarmManager** | P1 | No | 是 | 快照 + 重调度 |
-| **JobScheduler** | P1 | No | 是 | 重注册 + 幂等键 |
-| **ContentProvider** | P1 | Partial | 是 | quiesce 时关闭 cursor，恢复后重查询 |
-| **Connectivity/NetworkCallback** | P1 | No | 是 | 重注册回调 |
-| **LocationManager** | P1 | No | 是 | 重请求更新 |
-| **SensorManager** | P1 | No | 是 | 重注册监听 |
-| **NotificationManager** | P1/P2 | No | 是 | 重放通知账本 |
-| **MediaSession/AudioFocus** | P1 | No | 是 | 重推状态 + 重申请焦点 |
-| **InputMethodManager** | P1 | No | 是 | restartInput + 可见性对齐 |
-| **PackageManager/权限** | P0/P1 | No | 是 | 校验 + 对账 |
-| **ashmem/memfd** | P0 | Partial/No | 是 | 自定义 dump/restore |
-| **设备 FD (GPU/camera/audio)** | P0 | No | 是 | dump 前关闭，恢复后重建 |
+| 系统服务 | 严重度 | CRIU 覆盖 | 需要自定义处理 | 恢复方式 | Flux 对比 |
+|----------|--------|-----------|---------------|----------|-----------|
+| **AMS** | P0 | No | 是 | Quiesce + Reattach 协议 | 本方案更完整（保留 ProcessRecord） |
+| **WMS/SurfaceFlinger** | P0/P1 | No | 是 | 重建 Surface/EGL；`[Flux]` 销毁-重建为 fallback | Flux 更简单但丢失窗口状态 |
+| **AlarmManager** | P1 | No | 是 | 快照 + 重调度 + `[Flux]` checkpoint-time 过期过滤 | 已采纳 Flux 过期闹钟跳过逻辑 |
+| **JobScheduler** | P1 | No | 是 | 重注册 + 幂等键 | Flux 未覆盖 |
+| **ContentProvider** | P1 | Partial | 是 | quiesce 时关闭 cursor，恢复后重查询 | Flux 未覆盖 |
+| **Connectivity/NetworkCallback** | P1 | No | 是 | 重注册回调 + `[Flux]` 可视为网络变化事件简化 | 已采纳简化路径 |
+| **LocationManager** | P1 | No | 是 | 重请求更新 | 两者高度相似 |
+| **SensorManager** | P1 | No | 是 | 重注册监听（完全重建优于 Flux dup2） | 已评估 Flux dup2，不采纳 |
+| **NotificationManager** | P1/P2 | No | 是 | 重放通知账本 | 本方案更完整（NLS/bubble/snooze） |
+| **MediaSession/AudioFocus** | P1 | No | 是 | 重推状态 + 重申请焦点 | 两者高度相似 |
+| **InputMethodManager** | P1 | No | 是 | restartInput + 可见性对齐 | 两者高度相似 |
+| **PackageManager/权限** | P0/P1 | No | 是 | 校验 + 对账 | Flux 未覆盖 |
+| **ashmem/memfd** | P0 | Partial/No | 是 | 自定义 dump/restore | Flux 未涉及 |
+| **设备 FD (GPU/camera/audio)** | P0 | No | 是 | dump 前关闭，恢复后重建 | Flux 采用完全销毁策略 |
 
 ---
 
-*文档版本：v1.1*
+*文档版本：v1.2*
 *最后更新：2026-03-11*
-*状态：已完成所有章节*
+*状态：已完成所有章节，含 Flux 论文对比分析及方案改进*
