@@ -19,7 +19,15 @@ PLAN.md
 3. `PLAN-BINDER.md`：Binder 内核态的详细方案
 4. `PLAN-OTHER-STATES.md`：非 Binder 状态的恢复框架
 
-## 二、目标与范围
+## 二、项目背景
+
+当前项目背景是鸿蒙手机终端。在该终端上，安卓应用通过安卓容器兼容运行，但冷启动时间过长，已经成为体验优化的核心问题之一。
+
+因此，本项目不只是单纯研究 Android 容器的 checkpoint/restore 技术可行性，更直接服务于“缩短安卓应用冷启动时间”这一目标。核心思路是评估能否通过容器或应用进程级别的快照/恢复，减少每次重新启动安卓容器、系统服务和应用初始化链路带来的启动开销。
+
+在这个背景下，Binder 句柄失效、系统服务状态漂移、图形与设备状态重建等问题，都是快照恢复方案能否真正用于冷启动优化的关键约束，而不是独立存在的学术问题。
+
+## 三、目标与范围
 
 目标是研究并实现 Android 容器内应用进程的 checkpoint/restore，使恢复后的进程尽量保持原有运行态，而不是简单重启应用。
 
@@ -31,17 +39,17 @@ PLAN.md
   - `L1`：CRIU 是否能先成功处理 Android 容器本身
   - `L2`：即使 CRIU 成功，Binder 和系统服务状态是否还能一致
 
-## 三、核心结论
+## 四、核心结论
 
-### 3.1 Phase 0 是硬前置条件
+### 4.1 Phase 0 是硬前置条件
 
 在当前项目上下文里，第一道 gate 不是 Binder，而是 CRIU 能否成功 checkpoint/restore Android 容器。这个问题的详细分析和备选路线见 `PLAN-ISSUES-SOLUTION.md`。
 
-### 3.2 Binder 恢复是必要条件，但不是充分条件
+### 4.2 Binder 恢复是必要条件，但不是充分条件
 
 只恢复 Binder 句柄还不够。App 与 `system_server`、`SurfaceFlinger`、网络对端、HAL 之间联合持有的状态，都会在“只恢复 app 进程”时出现偏移或失效。
 
-### 3.3 推荐采用四阶段恢复模型
+### 4.3 推荐采用四阶段恢复模型
 
 统一采用：
 
@@ -50,7 +58,7 @@ PLAN.md
 3. `Restore`：恢复进程、地址空间和 Binder 内核态
 4. `Rebind`：对系统服务、窗口、回调、设备和网络状态做重绑/重建
 
-## 四、执行路线摘要
+## 五、执行路线摘要
 
 | 阶段 | 目标 | 产出 | 详细文档 |
 |---|---|---|---|
@@ -59,11 +67,11 @@ PLAN.md
 | Phase 2 | 处理 app 与系统服务的外部联合状态 | AMS/WMS/回调/设备重绑框架 | `PLAN-OTHER-STATES.md` |
 | Phase 3 | 做端到端验证与取舍决策 | “可无缝恢复”或“允许部分重建”的结论 | `PLAN-BINDER.md`、`PLAN-OTHER-STATES-DETAIL.md` |
 
-## 五、Binder 方案摘要
+## 六、Binder 方案摘要
 
 Binder 部分只保留顶层要点，详细实现放到 `PLAN-BINDER.md`。
 
-### 5.1 Binder 要恢复的不是 fd，而是整套内核态关系
+### 6.1 Binder 要恢复的不是 fd，而是整套内核态关系
 
 CRIU 默认只会保留 `/dev/binder*` 这个 fd，本身不会保存：
 
@@ -74,21 +82,21 @@ CRIU 默认只会保留 `/dev/binder*` 这个 fd，本身不会保存：
 - death notification
 - 线程池参数与部分上下文信息
 
-### 5.2 设计原则
+### 6.2 设计原则
 
 - dump/restore 必须建立在 Binder 已静默的前提上
 - 不能依赖“在内核里按服务名查 ServiceManager”这种不存在的能力
 - 恢复顺序必须是“上下文管理者/服务端节点优先，客户端引用随后”
 - 需要跨进程协调恢复整个 Binder context，而不是按单进程孤立恢复
 
-### 5.3 当前建议
+### 6.3 当前建议
 
 - 优先补齐 Binder quiesce/freeze 机制
 - 把 Binder 详细方案与问题修正拆开看：
   - `PLAN-BINDER.md` 讲目标方案
   - `PLAN-ISSUES-BINDER.md` 讲当前 draft 的错误和必须修正项
 
-## 六、非 Binder 状态摘要
+## 七、非 Binder 状态摘要
 
 除 Binder 外，真正困难的是 app 与外部系统的联合状态。顶层只保留三个判断：
 
@@ -98,18 +106,18 @@ CRIU 默认只会保留 `/dev/binder*` 这个 fd，本身不会保存：
 
 详细设计见 `PLAN-OTHER-STATES.md` 和 `PLAN-OTHER-STATES-DETAIL.md`。
 
-## 七、应用快照需要恢复的完整状态清单
+## 八、应用快照需要恢复的完整状态清单
 
 核心结论：CRIU 能恢复大部分进程内 + 内核本地状态（线程、堆内存、多数 FD），但凡是与外部进程联合持有的状态（Android 系统服务、HAL 守护进程、SurfaceFlinger、网络对端）在仅恢复 app 进程时都会失效或不一致。
 
-### 7.1 当前项目覆盖范围
+### 8.1 当前项目覆盖范围
 
 顶层方案专注于两件事：
 
 - `PLAN-BINDER.md`：Binder 内核态（`binder_proc` / `binder_node` / `binder_ref` / `binder_thread`）
 - `PLAN-OTHER-STATES.md`：Binder 恢复之后，app 与系统服务的外部一致性恢复
 
-### 7.2 完整状态清单（7 大类）
+### 8.2 完整状态清单（7 大类）
 
 图例：P0 = 应用崩溃，P1 = 功能失效，P2 = 细微问题；CRIU = Full/Partial/No
 
@@ -200,7 +208,7 @@ CRIU 默认只会保留 `/dev/binder*` 这个 fd，本身不会保存：
 | `Handler.postDelayed` | 恢复后突发执行 | P1/P2 | Full（队列） | 重算 deadline |
 | 动画（`ValueAnimator`） | 跳帧/闪烁 | P2 | N/A | 取消 + 重启动画 |
 
-### 7.3 推荐的恢复架构
+### 8.3 推荐的恢复架构
 
 根据分析，建议采用 `quiesce → dump → restore → rebind` 四阶段设计：
 
@@ -214,7 +222,7 @@ CRIU 默认只会保留 `/dev/binder*` 这个 fd，本身不会保存：
 - checkpoint 整个 Android userspace（`system_server` + `SurfaceFlinger` + HAL + app）
 - 接受恢复后 Activity/窗口/渲染资源的部分重建
 
-### 7.4 当前计划的 Gap 归纳
+### 8.4 当前计划的 Gap 归纳
 
 | 维度 | 当前覆盖 | 缺口 |
 |---|---|---|
