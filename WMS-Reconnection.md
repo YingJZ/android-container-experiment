@@ -85,7 +85,7 @@ flowchart LR
 
 - Binder 身份关系：IWindow、Session、WindowState.mClient
 - WMS 内部注册表和层级关系：窗口属于谁、挂在哪个 DisplayContent 下、z-order/focus 是什么——焦点、z-order、可见性是**全局竞争结果**，不是单个 app 能单方面恢复的。
-- SurfaceFlinger / InputDispatcher 那边的对象图和注册状态——InputChannel 包含 **InputDispatcher 里的连接对象、epoll 注册、焦点路由、事件队列**；BufferQueue 中的部分状态**和 GPU/驱动/HWC 强绑定**
+- SurfaceFlinger / InputDispatcher 那边的对象图和注册状态——InputChannel 包含 **InputDispatcher 里的连接对象、epoll 注册、焦点路由、事件队列**；BufferQueue 中的部分状态**和 GPU/驱动/HWC 强绑定**。 [参考](#SurfaceFlinger / InputDispatcher 的对象图)
 - 几何与策略状态：frame、Insets、IME/focus/visibility——它们依赖当前 display rotation、cutout、状态栏/导航栏、IME、锁屏、多窗口、其他窗口遮挡情况，需要**重算**
 
 ### WMS 内部注册表和层级关系
